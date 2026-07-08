@@ -1,0 +1,18 @@
+{
+  "name": "verbectomy",
+  "description": "Surgical removal of comment verbosity: inject a comment-quality contract and validate it every turn, blocking verbose/decision-narration comments and enforcing required doc-comments.",
+  "version": "0.0.1",
+  "author": {
+    "name": "DotHyphon"
+  },
+  "homepage": "https://github.com/DotHyphon/verbectomy",
+  "repository": "https://github.com/DotHyphon/verbectomy",
+  "license": "MIT",
+  "keywords": [
+    "comments",
+    "verbosity",
+    "code-quality",
+    "hooks",
+    "review"
+  ]
+}

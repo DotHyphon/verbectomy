@@ -1,0 +1,22 @@
+{
+  "injectContract": true,
+  "reviewCommits": true,
+  "model": "haiku",
+  "maxAttempts": 3,
+  "maxDiffChars": 0,
+  "requireDoc": false,
+  "languages": [],
+  "sourceGlobs": [
+    "*.kt", "*.kts", "*.java", "*.ts", "*.tsx", "*.js", "*.jsx", "*.mjs", "*.cjs",
+    "*.py", "*.go", "*.rs", "*.cs", "*.rb", "*.php", "*.swift", "*.scala",
+    "*.c", "*.cc", "*.cpp", "*.h", "*.hpp", "*.dart", "*.lua", "*.groovy", "*.gradle",
+    "*.html", "*.htm", "*.vue", "*.svelte", "*.css", "*.scss", "*.less",
+    "*.sql", "*.sh", "*.bash", "*.ps1", "*.psm1", "*.yaml", "*.yml", "*.toml",
+    "*.md", "*.mdx", "*.markdown"
+  ],
+  "excludeGlobs": [
+    "**/test/**", "**/tests/**", "*Test.kt", "*Tests.kt", "*.spec.*", "*.test.*",
+    "**/generated/**", "**/build/**", "**/dist/**", "**/node_modules/**", "**/.gradle/**",
+    "**/CHANGELOG*", "**/LICENSE*"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "verbectomy",
+  "owner": {
+    "name": "DotHyphon"
+  },
+  "metadata": {
+    "description": "Comment-discipline plugin: injects a comment-quality contract and validates every turn's diff, blocking verbose or narration-heavy comments and enforcing required doc-comments."
+  },
+  "plugins": [
+    {
+      "name": "verbectomy",
+      "source": "./plugins/verbectomy",
+      "description": "Surgical removal of comment verbosity. Injects a code-comment contract and validates each turn's diff with a cheap reviewer model, blocking violations and sending them back for rewrite."
+    }
+  ]
+}
