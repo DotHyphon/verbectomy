@@ -1,5 +1,8 @@
 {
   "injectContract": true,
+  "asyncReview": true,
+  "earlyReview": true,
+  "stopWaitMs": 0,
   "reviewCommits": true,
   "model": "haiku",
   "maxAttempts": 3,

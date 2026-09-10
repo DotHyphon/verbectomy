@@ -14,9 +14,19 @@ into your codebase, and hands them back to the model to rewrite them properly or
 - **A comment contract, injected every turn.** The rules stay in front of the model as it writes.
   That sets the standard for what is acceptable and tries to keep the model from slipping back into verbose habits.
 - **A reviewer that enforces them.** At the end of a turn a cheap model reads the diff and, if it
-  finds verbose or redundant comments, blocks and sends them back to be rewritten.
+  finds verbose or redundant comments, sends them back to be rewritten.
 - **Cleaner commit messages.** A `git commit` with a padded or narration-heavy message is caught
   before it lands.
+
+The reviewer runs in the background and never holds up a turn: every hook returns in about 100ms.
+The review starts the moment the agent edits a file, not when it stops, so on any turn where the
+agent keeps working after its last edit the verdict is ready before it finishes, and the violations
+are handed back mid-turn at its next tool call. The agent fixes them in the same turn.
+
+When a turn ends too fast for that (a single edit, then done), the verdict lands after the stop.
+It is then delivered on your next prompt, and until it is resolved the stop hook and `git commit`
+are both blocked on it, so nothing verbose slips through either way. Set `stopWaitMs` if you would
+rather wait at the end of a turn than pick it up on the next one.
 
 Good comments stay and can be enforced.
 
@@ -38,6 +48,9 @@ only the keys you want to change. Arrays replace rather than merge.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `injectContract` | `true` | Keep the contract in context each turn. Off still enforces; saves context. |
+| `asyncReview` | `true` | Review in the background. `false` blocks the end of every turn until the review finishes. |
+| `earlyReview` | `true` | Start the review at the first edit, so the verdict can be applied mid-turn. `false` waits for the stop. |
+| `stopWaitMs` | `0` | Wait up to this long at the end of a turn for a review already running, to enforce it in the same turn. `0` never waits. |
 | `reviewCommits` | `true` | Review git commit messages before they land. |
 | `model` | `"haiku"` | Reviewer model. |
 | `maxAttempts` | `3` | Rewrite rounds per turn before the stop is allowed through. |
@@ -84,9 +97,17 @@ A clean review is silent. Every run still appends one line to `verbectomy.log` i
 dir (`$env:TEMP` on Windows, `/tmp` elsewhere), so you can always see what it decided:
 
 ```
-stop  [fb48875c] pass: reviewed src/main/.../ItemService.kt (9812ms)
-stop  [fb48875c] block: 2 violation(s) [restate, narration] in src/api.ts, attempt 1/3 (8801ms)
+edit  [fb48875c] queued: 1 file(s) to background reviewer pid 25284 (118ms)
+worker[fb48875c] found: 2 violation(s) [restate, narration] in src/api.ts (8801ms)
+edit  [fb48875c] delivered 2 violation(s) mid-turn (93ms)
+stop  [fb48875c] skip: nothing new since baseline/last pass (146ms)
 ```
+
+`edit` lines are the post-edit hook that starts the review and hands back its verdict, `worker` the
+background reviewer, `stop` the hook that ends your turn. A `skip: ... no comment syntax` line means
+the diff could not contain a comment violation, so no model was called at all. Above, the agent was
+told mid-turn and fixed the comments before stopping; had it not, the `stop` line would read
+`block: 2 violation(s) from background review, attempt 1/3`.
 
 ## Development
 

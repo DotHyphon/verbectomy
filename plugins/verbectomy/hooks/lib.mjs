@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, rmSync, readdirSync, appendFileSync, statSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname, extname, isAbsolute, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -127,6 +127,210 @@ export const writeState = (p, state) => {
 };
 
 export const hashText = (s) => createHash("sha1").update(s).digest("hex");
+
+// ---------------------------------------------------------------------------
+// Findings store. In async mode the Stop hook spawns a detached worker and
+// returns; the worker leaves its verdict here for the next hook to act on.
+// `hashes` records the reviewed diff per file, so a consumer can tell an
+// untouched violation (still real) from one the agent has since edited.
+// ---------------------------------------------------------------------------
+
+const sessionSlug = (sessionId) => String(sessionId || "nosession").replace(/[^\w.-]/g, "_");
+
+export const findingsPath = (sessionId) => join(TMP, `verbectomy-findings-${sessionSlug(sessionId)}.json`);
+
+export const readFindings = (p) => {
+  try {
+    const f = JSON.parse(readFileSync(p, "utf8"));
+    return Array.isArray(f?.violations) && f.violations.length ? f : null;
+  } catch {
+    return null;
+  }
+};
+
+export const writeFindings = (p, findings) => {
+  try {
+    writeFileSync(p, JSON.stringify(findings), "utf8");
+  } catch {}
+};
+
+export const clearFindings = (p) => {
+  try {
+    rmSync(p);
+  } catch {}
+};
+
+// Findings are delivered to the agent once, mid-turn, then kept as the backstop
+// for the stop hook. Without this mark every later tool call would re-report the
+// same violations.
+export const markDelivered = (p, findings) => writeFindings(p, { ...findings, delivered: true });
+
+const sleep = (ms) => {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {}
+};
+
+// Bounded wait for a verdict already in flight, for `stopWaitMs`. Polls a file
+// because the worker is a detached process with no channel back to here.
+export function waitForFindings(p, ms, step = 250) {
+  const deadline = Date.now() + ms;
+  let found = readFindings(p);
+  while (!found && Date.now() < deadline) {
+    sleep(Math.min(step, Math.max(0, deadline - Date.now())));
+    found = readFindings(p);
+  }
+  return found;
+}
+
+// True once the agent has edited every file the findings name, which makes the
+// verdict stale: the fix (or a further change) is already in, so a fresh review
+// decides rather than a block on text that no longer exists.
+export function findingsAreStale(findings, pieces) {
+  const hashes = findings?.hashes || {};
+  const files = Object.keys(hashes);
+  if (!files.length) return false;
+  const now = new Map(pieces.map((p) => [p.file, p.hash]));
+  return files.every((f) => now.get(f) !== hashes[f]);
+}
+
+// ---------------------------------------------------------------------------
+// Async worker. One in flight per session: the lock keeps a fast turn from
+// stacking reviewers, and its mtime expires it so a killed worker can't wedge
+// reviewing off for the rest of the session.
+// ---------------------------------------------------------------------------
+
+export const lockPath = (sessionId) => join(TMP, `verbectomy-worker-${sessionSlug(sessionId)}.lock`);
+
+const LOCK_TTL_MS = 6 * 60 * 1000;
+
+export function workerRunning(p, now = Date.now()) {
+  try {
+    return now - statSync(p).mtimeMs < LOCK_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
+export const takeLock = (p) => {
+  try {
+    writeFileSync(p, String(process.pid), "utf8");
+  } catch {}
+};
+
+export const releaseLock = (p) => {
+  try {
+    rmSync(p);
+  } catch {}
+};
+
+// Detached with stdio ignored, so the worker outlives this hook process instead
+// of being reaped when the turn ends.
+export function spawnWorker(payload) {
+  const file = join(HERE, "review-worker.mjs");
+  const payloadFile = join(TMP, `verbectomy-payload-${sessionSlug(payload.sessionId)}-${Date.now()}.json`);
+  try {
+    writeFileSync(payloadFile, JSON.stringify(payload), "utf8");
+    const child = spawn(process.execPath, [file, payloadFile], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      cwd: payload.cwd,
+      env: { ...process.env, [CHILD_FLAG]: "0" },
+    });
+    child.unref();
+    return { ok: true, pid: child.pid };
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+}
+
+// Queues whatever has changed since the baseline for background review. Shared
+// by the post-edit hook (which starts the review while the agent works on) and
+// the stop hook (which catches anything the edit hook did not get to).
+// Returns why it did nothing, so callers can log a single line.
+export function queueReview({ cwd, cfg, sessionId, userMsgs = [] }) {
+  const stateFile = statePath(sessionId);
+  const state = readState(stateFile);
+  const pieces = collectDiffPieces(cwd, cfg);
+  const pending = pieces.filter((p) => state[p.file] !== p.hash);
+  if (!pending.length) return { queued: 0, skip: "nothing new since baseline/last pass" };
+
+  const reviewable = pending.filter(pieceMayHaveComments);
+  for (const p of pending) if (!reviewable.includes(p)) state[p.file] = p.hash;
+  if (!reviewable.length) {
+    writeState(stateFile, state);
+    return { queued: 0, skip: `no comment syntax in ${pending.length} changed file(s)` };
+  }
+
+  const maxDiffChars = cfg.maxDiffChars ?? 0;
+  const totalChars = reviewable.reduce((n, p) => n + p.text.length, 0);
+  if (maxDiffChars > 0 && totalChars > maxDiffChars) {
+    for (const p of reviewable) state[p.file] = p.hash;
+    writeState(stateFile, state);
+    return { queued: 0, tooLarge: true, totalChars, files: reviewable.map((p) => p.file) };
+  }
+
+  writeState(stateFile, state);
+  const lock = lockPath(sessionId);
+  if (workerRunning(lock)) return { queued: 0, skip: `worker busy, ${reviewable.length} file(s) left for next event` };
+
+  takeLock(lock);
+  const spawned = spawnWorker({
+    cwd,
+    sessionId,
+    userMsgs,
+    pieces: reviewable.map((p) => ({ file: p.file, hash: p.hash, text: p.text })),
+  });
+  if (!spawned.ok) {
+    releaseLock(lock);
+    return { queued: 0, error: spawned.error };
+  }
+  return { queued: reviewable.length, pid: spawned.pid, files: reviewable.map((p) => p.file) };
+}
+
+// ---------------------------------------------------------------------------
+// Comment prefilter: a diff with no comment syntax in it cannot hold a comment
+// violation, so it never needs a model call.
+// ---------------------------------------------------------------------------
+
+const PROSE_EXTS = new Set([".md", ".mdx", ".markdown"]);
+
+// Delimiters that open a block a plain changed line can sit inside. One of
+// these anywhere in the hunk means a changed line with no marker of its own may
+// still be comment text, so the file is reviewed.
+const BLOCK_DELIMS = ['"""', "'''", "/*", "*/", "<!--", "-->", "=begin", "<#"];
+
+const LINE_MARKERS = ["//", "#", "--", ";;", "%%"];
+
+// Markdown is reviewed as prose, so its whole diff counts as commentary.
+export function pieceMayHaveComments(piece) {
+  if (PROSE_EXTS.has(extname(piece.file).toLowerCase())) return true;
+  const text = piece.text || "";
+  if (BLOCK_DELIMS.some((d) => text.includes(d))) return true;
+  return text
+    .split("\n")
+    .filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l))
+    .some((l) => /^[+-]\s*\*/.test(l) || LINE_MARKERS.some((m) => l.includes(m)));
+}
+
+// ---------------------------------------------------------------------------
+// Violation rendering, shared by every consumer so the agent reads the same
+// list whether it arrives as a Stop block, injected context, or a commit deny.
+// ---------------------------------------------------------------------------
+
+export const formatViolations = (violations) =>
+  violations
+    .map(
+      (v) =>
+        `- ${v.file || "?"}${v.line ? ":" + v.line : ""} [${v.rule || "comment"}${v.fix ? ", fix: " + v.fix : ""}] ${v.why || ""}\n    > ${(v.text || "").trim()}`
+    )
+    .join("\n");
+
+export const violationInstruction = (n) =>
+  `verbectomy found ${n} contract violation(s). Apply each violation's fix: ` +
+  `'shrink' rewrites smaller keeping the insight, 'delete' removes. ` +
+  `User-approved comments stay as approved.`;
 
 // One line per hook run so "did it trigger, what did it decide" is always
 // answerable: hook outcomes are otherwise invisible when they allow.
@@ -492,7 +696,12 @@ export function runReviewer({ prompt, model, cwd, timeoutMs = 90000, maxBuffer =
   // argv naively, and a bad model name is worth rejecting on any path anyway.
   const safeModel = /^[A-Za-z0-9._:@-]+$/.test(model || "") ? model : "haiku";
   const { file, args: prefix, shell } = resolveReviewer();
-  const args = [...prefix, "-p", "--model", safeModel, "--output-format", "json", "--strict-mcp-config"];
+  // An empty --allowed-tools drops every tool schema from the reviewer's system
+  // prompt. Worth ~8k prompt tokens, and without tools to reach for it answers
+  // in one short pass instead of narrating: measured 3.5x faster end to end.
+  // The shell fallback joins argv naively and would swallow a bare empty arg.
+  const noTools = ["--allowed-tools", shell ? '""' : ""];
+  const args = [...prefix, "-p", "--model", safeModel, "--output-format", "json", "--strict-mcp-config", ...noTools];
   let run;
   try {
     run = spawnSync(file, args, {

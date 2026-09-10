@@ -222,4 +222,7 @@ For `.md` and other text/docs, the whole file is prose. Same spirit, applied to 
   for obvious changes.
 - The body explains why, not a line-by-line restatement of the diff.
 - No filler or hedging, no decision/process narration, no em dashes.
-- Bullet points are fine. Wrap body near 72 columns.
+- Prefer prose; bullet points are discouraged and earn their place only when the body lists several
+  genuinely independent points.
+- Do not hard-wrap to a column; a paragraph is one line and the reader's tool soft-wraps it. Reserve
+  line breaks for meaning: a blank line between distinct points.

@@ -15,6 +15,16 @@ import {
   recentUserMessages,
   collectWholeFilePieces,
   parseCmdShimTarget,
+  pieceMayHaveComments,
+  findingsAreStale,
+  formatViolations,
+  workerRunning,
+  readFindings,
+  writeFindings,
+  clearFindings,
+  findingsPath,
+  markDelivered,
+  waitForFindings,
 } from "./lib.mjs";
 
 test("globToRe basics", () => {
@@ -145,4 +155,79 @@ test("detectProjectDocStyles returns [] for a dir with no marker files", () => {
   // returns [] rather than guessing.
   const styles = detectProjectDocStyles(import.meta.dirname ?? ".", {});
   assert.ok(Array.isArray(styles));
+});
+
+test("pieceMayHaveComments keeps anything that could hold a comment", () => {
+  const may = (file, text) => pieceMayHaveComments({ file, text });
+  assert.ok(!may("a.js", "@@ -1,2 +1,2 @@\n-const x = 1;\n+const x = 2;\n"));
+  assert.ok(!may("a.py", "@@\n-total = a + b\n+total = a * b\n"), "a bare * is not comment syntax");
+  assert.ok(may("a.js", "@@\n+// note\n"));
+  assert.ok(may("a.py", "@@\n+x = 1  # note\n"));
+  assert.ok(may("a.sql", "@@\n+-- grant\n"));
+  assert.ok(may("a.js", "@@\n+ * continued doc line\n"), "doc-block continuation has no // of its own");
+  assert.ok(may("a.py", '@@\n """doc"""\n+  prose inside a docstring\n'), "block delimiter in context");
+  assert.ok(may("README.md", "@@\n+Some prose.\n"), "markdown is reviewed as prose");
+  assert.ok(!may("a.js", "--- a/a.js\n+++ b/a.js\n@@\n+const x = 2;\n"), "diff headers are not markers");
+});
+
+test("findingsAreStale only when every flagged file has changed", () => {
+  const findings = { hashes: { "a.js": "h1", "b.js": "h2" } };
+  const at = (a, b) => [{ file: "a.js", hash: a }, { file: "b.js", hash: b }];
+  assert.ok(!findingsAreStale(findings, at("h1", "h2")), "untouched findings stand");
+  assert.ok(!findingsAreStale(findings, at("new", "h2")), "one file left alone still blocks");
+  assert.ok(findingsAreStale(findings, at("new", "new2")));
+  assert.ok(findingsAreStale(findings, []), "files reverted or committed away are stale");
+  assert.ok(!findingsAreStale({ hashes: {} }, []), "no recorded hashes is never stale");
+});
+
+test("findings round-trip and empty violations read as nothing pending", () => {
+  const p = findingsPath("test-session");
+  writeFindings(p, { ts: 1, violations: [{ file: "a.js", rule: "narration" }], hashes: { "a.js": "h" } });
+  assert.equal(readFindings(p).violations.length, 1);
+  writeFindings(p, { ts: 1, violations: [], hashes: {} });
+  assert.equal(readFindings(p), null, "a clean verdict is not a pending finding");
+  clearFindings(p);
+  assert.equal(readFindings(p), null);
+});
+
+test("workerRunning expires a stale lock", () => {
+  const p = join(tmpdir(), "verbectomy-test-worker.lock");
+  writeFileSync(p, "123", "utf8");
+  assert.ok(workerRunning(p));
+  assert.ok(!workerRunning(p, Date.now() + 60 * 60 * 1000), "a killed worker cannot wedge reviews off");
+  rmSync(p);
+  assert.ok(!workerRunning(p), "no lock means no worker");
+});
+
+test("formatViolations renders location, rule, fix, and the offending text", () => {
+  const out = formatViolations([
+    { file: "a.js", line: 12, rule: "restatement", fix: "delete", why: "says what the code says", text: "  // increment i  " },
+  ]);
+  assert.equal(out, "- a.js:12 [restatement, fix: delete] says what the code says\n    > // increment i");
+  assert.equal(formatViolations([{}]), "- ? [comment] \n    > ", "a violation missing every field still renders");
+});
+
+test("markDelivered flags a verdict so it is reported once, not per tool call", () => {
+  const p = findingsPath("test-delivered");
+  const findings = { ts: 1, violations: [{ file: "a.js" }], hashes: { "a.js": "h" } };
+  writeFindings(p, findings);
+  assert.equal(readFindings(p).delivered, undefined);
+  markDelivered(p, findings);
+  const after = readFindings(p);
+  assert.equal(after.delivered, true);
+  assert.equal(after.violations.length, 1, "the verdict itself survives as the stop-hook backstop");
+  clearFindings(p);
+});
+
+test("waitForFindings returns early when a verdict is already in, and gives up on timeout", () => {
+  const p = findingsPath("test-wait");
+  clearFindings(p);
+  const t0 = Date.now();
+  assert.equal(waitForFindings(p, 300), null);
+  assert.ok(Date.now() - t0 >= 250, "it actually waited out the budget");
+  writeFindings(p, { ts: 1, violations: [{ file: "a.js" }], hashes: {} });
+  const t1 = Date.now();
+  assert.equal(waitForFindings(p, 5000).violations.length, 1);
+  assert.ok(Date.now() - t1 < 250, "a verdict already in hand costs no wait");
+  clearFindings(p);
 });

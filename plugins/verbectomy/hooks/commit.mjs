@@ -14,6 +14,12 @@ import {
   isGitCommitCommand,
   extractCommitMessage,
   runReviewer,
+  collectDiffPieces,
+  findingsPath,
+  readFindings,
+  findingsAreStale,
+  formatViolations,
+  violationInstruction,
   logRun,
 } from "./lib.mjs";
 
@@ -33,6 +39,35 @@ const cwd = input.cwd || process.cwd();
 if (!isGitCommitCommand(cmd)) allow();
 
 const cfg = loadConfig(cwd);
+
+const deny = (reason) => {
+  process.stdout.write(
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: reason,
+      },
+    })
+  );
+  process.exit(0);
+};
+
+// Async review's backstop. A commit is the last point where an unfixed comment
+// can still be caught cheaply, so an outstanding verdict blocks it. Stale
+// findings (their files edited since) are left to the next review instead.
+if (cfg.asyncReview !== false) {
+  const findingsFile = findingsPath(input.session_id);
+  const findings = readFindings(findingsFile);
+  if (findings && !findingsAreStale(findings, collectDiffPieces(cwd, cfg))) {
+    log(`deny: commit blocked by ${findings.violations.length} pending comment violation(s)`);
+    deny(
+      `${violationInstruction(findings.violations.length)} Fix these, then re-run the commit.\n\n` +
+        formatViolations(findings.violations)
+    );
+  }
+}
+
 if (cfg.reviewCommits === false) allow();
 
 const message = extractCommitMessage(cmd, cwd).trim();
@@ -79,18 +114,8 @@ if (result.violations.length === 0) {
 bumpCounter(counter, attempts + 1);
 log(`deny: ${result.violations.length} violation(s), attempt ${attempts + 1}/${maxAttempts}`);
 const list = result.violations.map((v) => `- [${v.rule || "commit"}] ${v.why || ""}`).join("\n");
-const reason =
+deny(
   `verbectomy: this commit message has ${result.violations.length} contract violation(s). Rewrite it ` +
-  `(imperative subject <= 50 chars, body only for the non-obvious WHY, no filler, no decision ` +
-  `narration, no em dashes) and re-run the commit:\n\n${list}`;
-
-process.stdout.write(
-  JSON.stringify({
-    hookSpecificOutput: {
-      hookEventName: "PreToolUse",
-      permissionDecision: "deny",
-      permissionDecisionReason: reason,
-    },
-  })
+    `(imperative subject <= 50 chars, body only for the non-obvious WHY, no filler, no decision ` +
+    `narration, no em dashes) and re-run the commit:\n\n${list}`
 );
-process.exit(0);

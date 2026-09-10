@@ -12,6 +12,18 @@
         ]
       }
     ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Update|Bash|PowerShell",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/edit.mjs\"",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [
