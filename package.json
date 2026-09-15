@@ -1,6 +1,6 @@
 {
   "name": "verbectomy",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "Surgical removal of comment verbosity: a Claude Code plugin that injects a comment-quality contract and validates each turn's diff with a cheap reviewer model.",
   "type": "module",
   "license": "MIT",

@@ -216,8 +216,12 @@ For `.md` and other text/docs, the whole file is prose. Same spirit, applied to 
 
 ## Git commit messages
 
-- Subject line: imperative mood ("Add", not "Added"/"Adds"), roughly <= 50 chars, no trailing
-  period.
+- Subject line: imperative mood ("Add", not "Added"/"Adds"), no trailing period.
+- No column or per-line character limit anywhere in the message; never flag subject or body line
+  length. The whole message is what stays short: subject plus at most a few sentences of body,
+  roughly 400 characters in total.
+- A project-mandated subject structure (a ticket type and number, a scope prefix, the ticket title
+  verbatim) is required content, not filler or process narration. Never flag it.
 - Blank line, then a body ONLY when it adds the WHY the diff cannot show. Skip the body entirely
   for obvious changes.
 - The body explains why, not a line-by-line restatement of the diff.

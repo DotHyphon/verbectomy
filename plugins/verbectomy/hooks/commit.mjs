@@ -116,6 +116,6 @@ log(`deny: ${result.violations.length} violation(s), attempt ${attempts + 1}/${m
 const list = result.violations.map((v) => `- [${v.rule || "commit"}] ${v.why || ""}`).join("\n");
 deny(
   `verbectomy: this commit message has ${result.violations.length} contract violation(s). Rewrite it ` +
-    `(imperative subject <= 50 chars, body only for the non-obvious WHY, no filler, no decision ` +
+    `(imperative subject, whole message under about 400 chars, body only for the non-obvious WHY, no filler, no decision ` +
     `narration, no em dashes) and re-run the commit:\n\n${list}`
 );
